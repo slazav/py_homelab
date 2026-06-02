@@ -34,70 +34,6 @@ class SPP:
     return self.read()
 
 ###########################################################
-
-def set_int_gen(osc, amp, freq):
-  osc.query('gen_builtin 0 %f %f sine'%(amp, freq))
-
-def set_ext_gen1(gen, amp, freq):
-  gen.query(':w20=1,0.')  # status
-  gen.query(':w21=0.')    # waveform
-  gen.query(':w23=%d,0.'%(int(freq*100))) # freq
-  gen.query(':w25=%d.'%(int(amp*1000)))   # amp
-  gen.query(':w27=1000.') # offset
-
-def set_ext_gen2(gen, amp, freq):
-  gen.query(':w20=0,1.')  # status
-  gen.query(':w22=0.')    # waveform
-  gen.query(':w24=%d,0.'%(int(freq*100))) # freq
-  gen.query(':w26=%d.'%(int(amp*1000)))   # amp
-  gen.query(':w28=1000.') # offset
-
-# measure channel A
-def measureB(osc, rng, npts, dt, fmin=0, fmax=1e7):
-  fname="/tmp/rec1.sig"
-  osc.query('trig_set NONE 0 RISING 0')
-  osc.query('chan_set B 1 AC %f'%(rng))
-  osc.query('block B 0 %d %e %s'%(npts,dt,fname))
-  osc.query('wait')
-
-  # detect overload flag
-  res = subprocess.run('sig_filter -f overload %s'%(fname),
-                        text=1, shell=1, capture_output=1)
-  ovl = ('1' in res.stdout.split())
-  # get amplitude and frequency
-  res = subprocess.run('sig_filter -f lockin %s -s 0 -F %e -G %e -r 0'%(fname, fmin, fmax),
-                        text=1, shell=1, capture_output=1)
-  r = res.stdout.split()
-  if len(r)!=3: (F,V) = (None,None)
-  else: (F,V) = (float(r[0]), 2*float(r[1]))
-  return (F, V, ovl)
-
-# measure channels AB
-def measureAB(osc, rng, npts, dt, fmin=0, fmax=1e7):
-  fname="/tmp/rec1.sig"
-  osc.query('trig_set NONE 0 RISING 0')
-  osc.query('chan_set A 1 AC %f'%(rng))
-  osc.query('chan_set B 1 AC %f'%(rng))
-  osc.query('block AB 0 %d %e %s'%(npts,dt,fname))
-  osc.query('wait')
-  # detect overload flag
-  res = subprocess.run('sig_filter -f overload %s'%(fname),
-                        text=1, shell=1, capture_output=1)
-  ovl = ('1' in res.stdout.split())
-  # get amplitudes and frequencies
-  res1 = subprocess.run('sig_filter -f lockin %s -s 0 -F %e -G %e -r 0'%(fname, fmin, fmax),
-                        text=1, shell=1, capture_output=1)
-  res2 = subprocess.run('sig_filter -f lockin %s -s 1 -F %e -G %e -r 1'%(fname, fmin, fmax),
-                        text=1, shell=1, capture_output=1)
-  r1 = res1.stdout.split()
-  r2 = res2.stdout.split()
-  if len(r1)!=3: (F1,V1) = (None,None)
-  else: (F1,V1) = (float(r1[0]), 2*float(r1[1]))
-  if len(r2)!=3: (F2,V2) = (None,None)
-  else: (F2,V2) = (float(r2[0]), 2*float(r2[1]))
-  return (F1,V1, F2,V2, ovl)
-
-##################################################
 # Interface to oscilloscope (Pico4262, device name: "osc")
 class osc(SPP):
   def __init__(self):
@@ -264,14 +200,14 @@ class ps(SPP):
 
 
 ##################################################
-# Lock-in measurement 
+# Lock-in measurement vs amplitude and/or frequency
 
 def meas_sweep(
       fname="tmp.dat",  # file to save result
       amps=None,        # amplitude list
       freqs=None,       # frequency list
       ext_gen=False,    # use internal/external generator
-      ext_gen_ch=0,     # generator channel
+      ext_gen_ch=0,     # channel for external generator
       chs='AB',         # oscilloscope channel(s)
       dt=1e-7,          # sampling step
       periods=100,      # number of periods to measure
@@ -292,7 +228,9 @@ def meas_sweep(
 
   # open output file and pring header
   ff = open(fname, "w")
-  print("# F_set      Vpp_set   F1           Vpp1   OVL1 RNG1  F2           Vpp2   OVL2 RNG2 ", file=ff)
+  print("# F_set      Vpp_set ", file=ff)
+  for i in range(len(chs)):
+     print("  F%d           Vpp%d   OVL%d RNG%d"%(i,i,i,i), file=ff)
 
   rngs=[amps[0],amps[0]]
   for amp in amps:
@@ -319,97 +257,3 @@ def meas_sweep(
   if ext_gen: gen0.set_zero(ext_gen_ch)
   else: osc0.set_zero()
   ff.close()
-
-
-
-def meas_amp_sweep(
-      fname="tmp.dat",  # file to save result
-      freq=1000,        # measurement frequency
-      amps=None,        # list of amplitudes (default: linspace(0,2,101))
-      ext_gen=False,    # use internal/external generator
-      ext_gen_ch=0,     # channel
-      osc_ch='A',       # oscilloscope channel
-      osc_ch_ref=None,  # if not None, measure input voltage on this channel
-      rng_mult=1.0, rng_min=0,
-      autorange=True,
-      dt=1e-7,          # sampling step
-      periods=100,      # number of periods to measure
-    ):     #
-
-  # set default amplitude list
-  if type(amps)==type(None):
-    if ext_gen: amps = numpy.linspace(0, 2, 101)
-    else:       amps = numpy.linspace(0, 10, 101)
-
-  # open oscilloscope and get ranges
-  osc0 = osc()
-  rngs = osc0.query('ranges %s'%(osc_ch)).split()
-
-  # open external generator if needed
-  if ext_gen:
-    gen0=gen()
-    gen0.set_chans(ext_gen_ch==0,ext_gen_ch==1)
-
-  # open output file and pring header
-  ff = open(fname, "w")
-  print("# F_in  Vpp_in  F_out Vpp_out OVL", file=ff)
-
-  npts=periods/dt/freq
-  r1=0
-  r2=0
-  for amp in amps:
-
-    if not autorange:
-      # find measurement ranges
-      for r1 in range(len(rngs)):
-        rng = float(rngs[r1])
-        if rng>rng_mult*amp and rng>=rng_min: break
-      for r2 in range(len(rngs)):
-        rng = float(rngs[r2])
-        if rng>amp and rng>=rng_min: break
-
-    # set sine wave
-    if ext_gen: gen0.set_sine(ext_gen_ch, amp, freq)
-    else: osc0.set_sine(amp, freq)
-    time.sleep(0.1)
-
-    # do measurement (autorange loop)
-    while True:
-      flags=""
-      if osc_ch_ref:
-        r = osc0.measure2(npts=npts, dt=dt,
-                          fmin=freq*0.95, fmax=freq*1.05,
-                          rng1=float(rngs[r1]), rng2=float(rngs[r2]),
-                          ch1=osc_ch, ch2=osc_ch_ref)
-        if len(r)!=6: raise Exceptopn("Bad output")
-        in_freq = r[3]
-        in_amp = r[4]
-        if r[2]:
-           flags+=" OVL"
-           if autorange: r1+=1
-        if r[5]: 
-           flags+=" OVL_REF"
-           if autorange: r2+=1
-        #print("# %f(%f) %s %f(%f) %s"%(r[1],rng,r[2], r[4],ref_rng, r[5]))
-      else:
-        r = osc0.measure(osc_ch, float(rngs[r1]), npts, dt, fmin=freq*0.95, fmax=freq*1.05)
-        if len(r)!=3: raise Exceptopn("Bad output")
-        in_freq = freq
-        in_amp = amp
-        if r[2]:
-          flags+=" OVL"
-          if autorange: r1+=1
-
-      if flags!="": flags = "# " + flags
-      print(in_freq, in_amp, r[0], r[1], flags)
-      if not autorange or flags=="" or r1>=len(rngs) or r2>=len(rngs): break
-
-    # print results
-    print(in_freq, in_amp, r[0], r[1], flags, file=ff)
-    ff.flush()
-
-  # switch generator off
-  if ext_gen: gen0.set_zero(ext_gen_ch)
-  else: osc0.set_zero()
-  ff.close()
-
